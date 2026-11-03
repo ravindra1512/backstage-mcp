@@ -2,7 +2,7 @@ import { parseEntityRef, DEFAULT_NAMESPACE } from "../entity-ref.js";
 import type { BackstageClient } from "./backstage.js";
 import { BackstageApiError } from "./backstage.js";
 
-const TECHDOCS_MAX_CHARS = 8_000;
+const TECHDOCS_MAX_CHARS = 80_000;
 
 export interface TechDocsResult {
   entityRef: string;
