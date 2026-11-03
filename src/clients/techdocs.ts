@@ -44,10 +44,20 @@ export class BackstageTechDocsClient {
   ): Promise<string> {
     const basePath = `/api/techdocs/static/docs/${namespace}/${kind}/${name}`;
 
-    const indexed = await this.getDocsFromSearchIndex(basePath).catch(
-      () => null
-    );
+    const indexed = await this.getDocsFromSearchIndex(basePath).catch((err) => {
+      console.error(
+        `[techdocs] search_index.json failed for ${basePath}: ${
+          err instanceof BackstageApiError
+            ? `${err.status} ${err.statusText} ${err.body.slice(0, 200)}`
+            : (err as Error).message
+        }`
+      );
+      return null;
+    });
     if (indexed) return indexed;
+    console.error(
+      `[techdocs] no usable search index for ${basePath}, falling back to index.html`
+    );
 
     let html = await this.base.fetchText(`${basePath}/index.html`);
 
@@ -73,7 +83,7 @@ export class BackstageTechDocsClient {
     basePath: string
   ): Promise<string | null> {
     const raw = await this.base.fetchText(`${basePath}/search/search_index.json`);
-    const index = JSON.parse(raw) as {
+    const index = JSON.parse(raw.replace(/^\uFEFF/, "")) as {
       docs?: Array<{ location?: string; title?: string; text?: string }>;
     };
     const docs = index.docs ?? [];
