@@ -293,6 +293,12 @@ export function createServer(config: Config): McpServer {
         .describe(
           "Force a TechDocs re-render before fetching. Use when docs may be stale."
         ),
+      includeImages: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Also return the documentation's PNG/JPEG/GIF/WebP images (e.g. workflow diagrams) as base64 image content blocks after the text. Set false for text only."
+        ),
     },
     (input) => techDocsTools.getTechDocs(input)
   );

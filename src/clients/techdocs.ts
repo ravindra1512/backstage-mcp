@@ -3,6 +3,30 @@ import type { BackstageClient } from "./backstage.js";
 import { BackstageApiError } from "./backstage.js";
 
 const TECHDOCS_MAX_CHARS = 80_000;
+const TECHDOCS_MAX_IMAGES = 10;
+const TECHDOCS_MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+const TECHDOCS_MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024;
+const TECHDOCS_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+function decodeHtmlAttr(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+export interface TechDocsImage {
+  page: string;
+  src: string;
+  alt: string;
+  mimeType: string;
+  data: string; // base64
+}
 
 export interface TechDocsResult {
   entityRef: string;
@@ -10,6 +34,8 @@ export interface TechDocsResult {
   synced: boolean;
   truncated: boolean;
   source: "search_index" | "index.html";
+  images: TechDocsImage[];
+  skippedImages: string[];
   warning?: string;
 }
 
@@ -43,13 +69,26 @@ export class BackstageTechDocsClient {
     kind: string,
     namespace: string,
     name: string
-  ): Promise<{ content: string; source: "search_index" | "index.html"; warning?: string }> {
+  ): Promise<{
+    content: string;
+    source: "search_index" | "index.html";
+    warning?: string;
+    basePath: string;
+    pages: string[];
+  }> {
     const basePath = `/api/techdocs/static/docs/${namespace}/${kind}/${name}`;
 
     let warning: string | undefined;
     try {
       const indexed = await this.getDocsFromSearchIndex(basePath);
-      if (indexed) return { content: indexed, source: "search_index" };
+      if (indexed) {
+        return {
+          content: indexed.content,
+          source: "search_index",
+          basePath,
+          pages: indexed.pages,
+        };
+      }
       warning = "search_index.json had no usable content";
     } catch (err) {
       warning = `search_index.json failed: ${
@@ -61,6 +100,7 @@ export class BackstageTechDocsClient {
     console.error(`[techdocs] ${basePath}: ${warning}; falling back to index.html`);
 
     let html = await this.base.fetchText(`${basePath}/index.html`);
+    let page = "";
 
     // MkDocs generates redirect stubs — detect and follow them
     const redirectMatch = html.match(
@@ -68,12 +108,123 @@ export class BackstageTechDocsClient {
     );
     if (redirectMatch) {
       const redirectTarget = redirectMatch[1].replace(/\/$/, "");
-      html = await this.base
+      const followed = await this.base
         .fetchText(`${basePath}/${redirectTarget}/index.html`)
-        .catch(() => html); // fall back to original if redirect fails
+        .catch(() => null); // fall back to original if redirect fails
+      if (followed !== null) {
+        html = followed;
+        page = `${redirectTarget}/`;
+      }
     }
 
-    return { content: this.stripHtml(html), source: "index.html", warning };
+    return {
+      content: this.stripHtml(html),
+      source: "index.html",
+      warning,
+      basePath,
+      pages: [page],
+    };
+  }
+
+  /**
+   * Download raster images referenced by the given docs pages as base64.
+   * Only images served from the same TechDocs docs path are fetched.
+   */
+  private async fetchImages(
+    basePath: string,
+    pages: string[]
+  ): Promise<{ images: TechDocsImage[]; skipped: string[] }> {
+    const images: TechDocsImage[] = [];
+    const skipped: string[] = [];
+    const seen = new Set<string>();
+    let totalBytes = 0;
+    const origin = "http://techdocs.local";
+
+    for (const page of pages) {
+      if (images.length >= TECHDOCS_MAX_IMAGES) break;
+      const pagePath =
+        page === "" || page.endsWith("/") ? `${page}index.html` : page;
+      const pageUrl = new URL(`${basePath}/${pagePath}`, origin);
+
+      let html: string;
+      try {
+        html = await this.base.fetchText(`${pageUrl.pathname}`);
+      } catch {
+        continue;
+      }
+
+      const article = html.match(/<article\b[\s\S]*?<\/article>/i)?.[0] ?? html;
+      const body = article
+        .replace(/<(nav|header|footer)\b[\s\S]*?<\/\1>/gi, " ")
+        .replace(/<script\b[\s\S]*?<\/script>/gi, " ");
+
+      for (const tag of body.match(/<img\b[^>]*>/gi) ?? []) {
+        if (images.length >= TECHDOCS_MAX_IMAGES) break;
+        const src = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1];
+        if (!src) continue;
+        const alt = decodeHtmlAttr(
+          tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] ?? ""
+        );
+
+        let data: Buffer;
+        let mimeType: string;
+        let key: string;
+        try {
+          if (src.startsWith("data:")) {
+            const m = src.match(/^data:([^;,]+);base64,(.+)$/s);
+            if (!m) continue;
+            mimeType = m[1].toLowerCase();
+            data = Buffer.from(m[2], "base64");
+            key = src.slice(0, 120);
+          } else {
+            const resolved = new URL(decodeHtmlAttr(src), pageUrl);
+            if (
+              resolved.origin !== origin ||
+              !resolved.pathname.startsWith(`${basePath}/`)
+            ) {
+              continue; // external or outside this entity's docs
+            }
+            key = resolved.pathname;
+            if (seen.has(key)) continue;
+            const res = await this.base.fetch(
+              `${resolved.pathname}${resolved.search}`
+            );
+            mimeType = (res.headers.get("content-type") ?? "")
+              .split(";")[0]
+              .trim()
+              .toLowerCase();
+            data = Buffer.from(await res.arrayBuffer());
+          }
+        } catch (err) {
+          skipped.push(`${src} (fetch failed: ${(err as Error).message})`);
+          continue;
+        }
+
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        if (!TECHDOCS_IMAGE_TYPES.has(mimeType)) {
+          skipped.push(`${src} (unsupported type ${mimeType || "unknown"})`);
+          continue;
+        }
+        if (
+          data.length > TECHDOCS_MAX_IMAGE_BYTES ||
+          totalBytes + data.length > TECHDOCS_MAX_TOTAL_IMAGE_BYTES
+        ) {
+          skipped.push(`${src} (too large: ${data.length} bytes)`);
+          continue;
+        }
+        totalBytes += data.length;
+        images.push({
+          page: page || "index",
+          src,
+          alt,
+          mimeType,
+          data: data.toString("base64"),
+        });
+      }
+    }
+    return { images, skipped };
   }
 
   /**
@@ -82,7 +233,7 @@ export class BackstageTechDocsClient {
    */
   private async getDocsFromSearchIndex(
     basePath: string
-  ): Promise<string | null> {
+  ): Promise<{ content: string; pages: string[] } | null> {
     const raw = await this.base.fetchText(`${basePath}/search/search_index.json`);
     const index = JSON.parse(raw.replace(/^\uFEFF/, "")) as {
       docs?: Array<{ location?: string; title?: string; text?: string }>;
@@ -107,12 +258,15 @@ export class BackstageTechDocsClient {
       sections.push(`# Page: ${page || "index"}\n${parts.join("\n")}`);
     }
     const content = sections.join("\n\n");
-    return content.length > 0 ? content : null;
+    return content.length > 0
+      ? { content, pages: [...pages.keys()] }
+      : null;
   }
 
   async getTechDocs(
     entityRef: string,
-    forceSync: boolean
+    forceSync: boolean,
+    includeImages = true
   ): Promise<TechDocsResult> {
     const parsed = parseEntityRef(entityRef);
     const kind = parsed.kind.toLowerCase();
@@ -139,8 +293,25 @@ export class BackstageTechDocsClient {
       }
     }
 
-    const { content, source, warning } = await this.getDocs(kind, namespace, name);
+    const { content, source, warning, basePath, pages } = await this.getDocs(
+      kind,
+      namespace,
+      name
+    );
     const truncated = content.length >= TECHDOCS_MAX_CHARS;
+
+    let images: TechDocsImage[] = [];
+    let skippedImages: string[] = [];
+    if (includeImages) {
+      try {
+        ({ images, skipped: skippedImages } = await this.fetchImages(
+          basePath,
+          pages
+        ));
+      } catch (err) {
+        skippedImages = [`image fetching failed: ${(err as Error).message}`];
+      }
+    }
 
     return {
       entityRef,
@@ -151,6 +322,8 @@ export class BackstageTechDocsClient {
       synced,
       truncated,
       source,
+      images,
+      skippedImages,
       ...(warning ? { warning } : {}),
     };
   }
