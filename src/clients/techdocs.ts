@@ -9,6 +9,8 @@ export interface TechDocsResult {
   content: string;
   synced: boolean;
   truncated: boolean;
+  source: "search_index" | "index.html";
+  warning?: string;
 }
 
 export class BackstageTechDocsClient {
@@ -41,23 +43,22 @@ export class BackstageTechDocsClient {
     kind: string,
     namespace: string,
     name: string
-  ): Promise<string> {
+  ): Promise<{ content: string; source: "search_index" | "index.html"; warning?: string }> {
     const basePath = `/api/techdocs/static/docs/${namespace}/${kind}/${name}`;
 
-    const indexed = await this.getDocsFromSearchIndex(basePath).catch((err) => {
-      console.error(
-        `[techdocs] search_index.json failed for ${basePath}: ${
-          err instanceof BackstageApiError
-            ? `${err.status} ${err.statusText} ${err.body.slice(0, 200)}`
-            : (err as Error).message
-        }`
-      );
-      return null;
-    });
-    if (indexed) return indexed;
-    console.error(
-      `[techdocs] no usable search index for ${basePath}, falling back to index.html`
-    );
+    let warning: string | undefined;
+    try {
+      const indexed = await this.getDocsFromSearchIndex(basePath);
+      if (indexed) return { content: indexed, source: "search_index" };
+      warning = "search_index.json had no usable content";
+    } catch (err) {
+      warning = `search_index.json failed: ${
+        err instanceof BackstageApiError
+          ? `${err.status} ${err.statusText} ${err.body.slice(0, 200)}`
+          : (err as Error).message
+      }`;
+    }
+    console.error(`[techdocs] ${basePath}: ${warning}; falling back to index.html`);
 
     let html = await this.base.fetchText(`${basePath}/index.html`);
 
@@ -72,7 +73,7 @@ export class BackstageTechDocsClient {
         .catch(() => html); // fall back to original if redirect fails
     }
 
-    return this.stripHtml(html);
+    return { content: this.stripHtml(html), source: "index.html", warning };
   }
 
   /**
@@ -138,7 +139,7 @@ export class BackstageTechDocsClient {
       }
     }
 
-    const content = await this.getDocs(kind, namespace, name);
+    const { content, source, warning } = await this.getDocs(kind, namespace, name);
     const truncated = content.length >= TECHDOCS_MAX_CHARS;
 
     return {
@@ -149,6 +150,8 @@ export class BackstageTechDocsClient {
         : content,
       synced,
       truncated,
+      source,
+      ...(warning ? { warning } : {}),
     };
   }
 

@@ -17,6 +17,8 @@ export class TechDocsTools {
         entityRef: result.entityRef,
         synced: result.synced,
         truncated: result.truncated,
+        source: result.source,
+        warning: result.warning,
         content: result.content,
       });
     }, `get_techdocs(${input.entityRef})`);
