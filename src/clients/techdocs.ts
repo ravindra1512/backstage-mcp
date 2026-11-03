@@ -43,6 +43,12 @@ export class BackstageTechDocsClient {
     name: string
   ): Promise<string> {
     const basePath = `/api/techdocs/static/docs/${namespace}/${kind}/${name}`;
+
+    const indexed = await this.getDocsFromSearchIndex(basePath).catch(
+      () => null
+    );
+    if (indexed) return indexed;
+
     let html = await this.base.fetchText(`${basePath}/index.html`);
 
     // MkDocs generates redirect stubs — detect and follow them
@@ -57,6 +63,40 @@ export class BackstageTechDocsClient {
     }
 
     return this.stripHtml(html);
+  }
+
+  /**
+   * Fetch all pages via MkDocs search/search_index.json.
+   * Returns null if the index is missing or empty so callers can fall back.
+   */
+  private async getDocsFromSearchIndex(
+    basePath: string
+  ): Promise<string | null> {
+    const raw = await this.base.fetchText(`${basePath}/search/search_index.json`);
+    const index = JSON.parse(raw) as {
+      docs?: Array<{ location?: string; title?: string; text?: string }>;
+    };
+    const docs = index.docs ?? [];
+
+    // Group entries by page (location without #anchor), preserving order.
+    const pages = new Map<string, string[]>();
+    for (const doc of docs) {
+      const page = (doc.location ?? "").split("#")[0];
+      const parts = pages.get(page) ?? [];
+      const title = doc.title?.trim();
+      const text = this.stripHtml(doc.text ?? "");
+      if (title) parts.push(`## ${title}`);
+      if (text) parts.push(text);
+      pages.set(page, parts);
+    }
+
+    const sections: string[] = [];
+    for (const [page, parts] of pages) {
+      if (parts.length === 0) continue;
+      sections.push(`# Page: ${page || "index"}\n${parts.join("\n")}`);
+    }
+    const content = sections.join("\n\n");
+    return content.length > 0 ? content : null;
   }
 
   async getTechDocs(
@@ -95,7 +135,7 @@ export class BackstageTechDocsClient {
       entityRef,
       content: truncated
         ? content.slice(0, TECHDOCS_MAX_CHARS) +
-          "\n\n[...content truncated at 8,000 chars]"
+          "\n\n[...content truncated at 80,000 chars]"
         : content,
       synced,
       truncated,
