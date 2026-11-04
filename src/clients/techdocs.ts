@@ -2,7 +2,7 @@ import { parseEntityRef, DEFAULT_NAMESPACE } from "../entity-ref.js";
 import type { BackstageClient } from "./backstage.js";
 import { BackstageApiError } from "./backstage.js";
 
-const TECHDOCS_MAX_CHARS = 100_000;
+const TECHDOCS_MAX_CHARS = 200_000;
 const TECHDOCS_MAX_IMAGES = 20;
 const TECHDOCS_MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const TECHDOCS_MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -317,7 +317,7 @@ export class BackstageTechDocsClient {
       entityRef,
       content: truncated
         ? content.slice(0, TECHDOCS_MAX_CHARS) +
-          "\n\n[...content truncated at 80,000 chars]"
+          `\n\n[...content truncated at ${TECHDOCS_MAX_CHARS.toLocaleString("en-US")} chars]`
         : content,
       synced,
       truncated,

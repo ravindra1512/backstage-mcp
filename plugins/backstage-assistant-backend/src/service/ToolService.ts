@@ -37,7 +37,7 @@ turndownService.addRule('pygmentsHighlightTable', {
 });
 
 const DEFAULT_NAMESPACE = 'default';
-const TECHDOCS_MAX_CHARS = 8_000;
+const TECHDOCS_MAX_CHARS = 200_000;
 const INTERESTING_RELATIONS = new Set([
   'providesApi',
   'consumesApi',
