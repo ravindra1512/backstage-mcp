@@ -2,10 +2,10 @@ import { parseEntityRef, DEFAULT_NAMESPACE } from "../entity-ref.js";
 import type { BackstageClient } from "./backstage.js";
 import { BackstageApiError } from "./backstage.js";
 
-const TECHDOCS_MAX_CHARS = 80_000;
-const TECHDOCS_MAX_IMAGES = 10;
+const TECHDOCS_MAX_CHARS = 100_000;
+const TECHDOCS_MAX_IMAGES = 20;
 const TECHDOCS_MAX_IMAGE_BYTES = 3 * 1024 * 1024;
-const TECHDOCS_MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024;
+const TECHDOCS_MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
 const TECHDOCS_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
